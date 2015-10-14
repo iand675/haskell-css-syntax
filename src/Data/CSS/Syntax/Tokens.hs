@@ -71,6 +71,7 @@ data Token
 
     | Delim !Char
 
+    | UserComment !Text
     deriving (Show, Eq)
 
 
@@ -179,7 +180,7 @@ renderToken (Hash _ x)           = "#" <> x
 
 renderToken (Delim x)            = T.singleton x
 
-
+renderToken (UserComment x)      = "/*" <> x <> "*/"
 
 renderString :: Text -> Text
 renderString = T.pack . concatMap f . T.unpack
@@ -198,10 +199,11 @@ renderString = T.pack . concatMap f . T.unpack
         else [c]
 
 
-parseComment :: Parser ()
+parseComment :: Parser Token
 parseComment = do
     void $ AP.string "/*"
-    void $ AP.manyTill' AP.anyChar (void (AP.string "*/") <|> AP.endOfInput)
+    commentText <- AP.manyTill' AP.anyChar (AP.string "*/")
+    return $ UserComment $ T.pack commentText
 
 parseWhitespace :: Parser Token
 parseWhitespace = do
@@ -418,7 +420,7 @@ parseAtKeyword = do
 
 
 parseToken :: Parser Token
-parseToken = AP.many' parseComment *> choice
+parseToken = choice
     [ parseWhitespace
 
     , AP.string "<!--" *> return CDO
@@ -452,7 +454,7 @@ parseToken = AP.many' parseComment *> choice
     , parseString '\''
 
     , parseAtKeyword
-
+    , parseComment
     , AP.anyChar >>= return . Delim
     ] <?> "token"
 
