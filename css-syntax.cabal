@@ -32,10 +32,12 @@ library
 
   build-depends:
      base >=4 && <4.9
-   , attoparsec >= 0.13
+   , trifecta
+   , parsers
    , bytestring
    , scientific
    , text
+   , ansi-wl-pprint
 
   ghc-options: -Wall
 
@@ -50,7 +52,7 @@ test-suite spec
 
   build-depends:
      base >=4 && <4.9
-   , attoparsec >= 0.13
+   , trifecta
    , bytestring
    , scientific
    , text

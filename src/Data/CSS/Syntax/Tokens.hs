@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE DeriveFunctor     #-}
 
 module Data.CSS.Syntax.Tokens
     ( Token(..)
@@ -16,7 +17,10 @@ import           Control.Monad
 
 import           Data.Text (Text)
 import qualified Data.Text as T
-import           Data.Attoparsec.Text as AP
+import qualified Data.Text.Encoding as T
+import           Text.Parser.LookAhead
+import           Text.PrettyPrint.ANSI.Leijen (displayS, renderCompact)
+import           Text.Trifecta hiding (parseString)
 import           Data.Monoid
 import           Data.Char
 import           Data.Scientific
@@ -24,55 +28,53 @@ import           Numeric
 
 import           Prelude
 
+data Token l
+    = Whitespace l
 
+    | CDO l -- CommentDelimiterOpen
+    | CDC l -- CommentDelimiterClose
 
-data Token
-    = Whitespace
+    | Comma l
+    | Colon l
+    | Semicolon l
 
-    | CDO -- CommentDelimiterOpen
-    | CDC -- CommentDelimiterClose
+    | LeftParen l
+    | RightParen l
+    | LeftSquareBracket l
+    | RightSquareBracket l
+    | LeftCurlyBracket l
+    | RightCurlyBracket l
 
-    | Comma
-    | Colon
-    | Semicolon
+    | SuffixMatch l
+    | SubstringMatch l
+    | PrefixMatch l
+    | DashMatch l
+    | IncludeMatch l
 
-    | LeftParen
-    | RightParen
-    | LeftSquareBracket
-    | RightSquareBracket
-    | LeftCurlyBracket
-    | RightCurlyBracket
+    | Column l
 
-    | SuffixMatch
-    | SubstringMatch
-    | PrefixMatch
-    | DashMatch
-    | IncludeMatch
+    | String l !Char !Text
+    | BadString l !Char !Text
 
-    | Column
+    | Number l !Text !NumericValue
+    | Percentage l !Text !NumericValue
+    | Dimension l !Text !NumericValue !Unit
 
-    | String !Char !Text
-    | BadString !Char !Text
+    | Url l !Text
+    | BadUrl l !Text
 
-    | Number !Text !NumericValue
-    | Percentage !Text !NumericValue
-    | Dimension !Text !NumericValue !Unit
+    | Ident l !Text
 
-    | Url !Text
-    | BadUrl !Text
+    | AtKeyword l !Text
 
-    | Ident !Text
+    | Function l !Text
 
-    | AtKeyword !Text
+    | Hash l !HashFlag !Text
 
-    | Function !Text
+    | Delim l !Char
 
-    | Hash !HashFlag !Text
-
-    | Delim !Char
-
-    | UserComment !Text
-    deriving (Show, Eq)
+    | UserComment l !Text
+    deriving (Show, Eq, Functor)
 
 
 data NumericValue
@@ -85,7 +87,7 @@ data HashFlag = HId | HUnrestricted
 
 type Unit = Text
 
-
+type SrcToken = Token Span
 
 -- Tokenization
 -------------------------------------------------------------------------------
@@ -95,8 +97,12 @@ type Unit = Text
 --
 -- https://drafts.csswg.org/css-syntax/#tokenization
 
-tokenize :: Text -> Either String [Token]
-tokenize = parseOnly (many' parseToken) . preprocessInputStream
+tokenize :: Text -> Either String [SrcToken]
+tokenize t = case result of
+  Success r -> Right r
+  Failure d -> Left $ displayS (renderCompact d) ""
+  where
+    result = parseByteString (many parseToken) mempty . T.encodeUtf8 $ preprocessInputStream t
 
 
 
@@ -131,56 +137,56 @@ preprocessInputStream = T.pack . f . T.unpack
 --
 -- https://drafts.csswg.org/css-syntax/#serialization
 
-serialize :: [Token] -> Text
+serialize :: [SrcToken] -> Text
 serialize = mconcat . map renderToken
 
 
-renderToken :: Token -> Text
-renderToken (Whitespace)         = " "
+renderToken :: SrcToken -> Text
+renderToken (Whitespace _)         = " "
 
-renderToken (CDO)                = "<!--"
-renderToken (CDC)                = "-->"
+renderToken (CDO _)                = "<!--"
+renderToken (CDC _)                = "-->"
 
-renderToken (Comma)              = ","
-renderToken (Colon)              = ":"
-renderToken (Semicolon)          = ";"
+renderToken (Comma _)              = ","
+renderToken (Colon _)              = ":"
+renderToken (Semicolon _)          = ";"
 
-renderToken (LeftParen)          = "("
-renderToken (RightParen)         = ")"
-renderToken (LeftSquareBracket)  = "["
-renderToken (RightSquareBracket) = "]"
-renderToken (LeftCurlyBracket)   = "{"
-renderToken (RightCurlyBracket)  = "}"
+renderToken (LeftParen _)          = "("
+renderToken (RightParen _)         = ")"
+renderToken (LeftSquareBracket _)  = "["
+renderToken (RightSquareBracket _) = "]"
+renderToken (LeftCurlyBracket _)   = "{"
+renderToken (RightCurlyBracket _)  = "}"
 
-renderToken (SuffixMatch)        = "$="
-renderToken (SubstringMatch)     = "*="
-renderToken (PrefixMatch)        = "^="
-renderToken (DashMatch)          = "|="
-renderToken (IncludeMatch)       = "~="
+renderToken (SuffixMatch _)        = "$="
+renderToken (SubstringMatch _)     = "*="
+renderToken (PrefixMatch _)        = "^="
+renderToken (DashMatch _)          = "|="
+renderToken (IncludeMatch _)       = "~="
 
-renderToken (Column)             = "||"
+renderToken (Column _)             = "||"
 
-renderToken (String d x)         = T.singleton d <> renderString x <> T.singleton d
-renderToken (BadString d x)      = T.singleton d <> renderString x <> T.singleton d
+renderToken (String _ d x)         = T.singleton d <> renderString x <> T.singleton d
+renderToken (BadString _ d x)      = T.singleton d <> renderString x <> T.singleton d
 
-renderToken (Number x _)         = x
-renderToken (Percentage x _)     = x <> "%"
-renderToken (Dimension x _ u)    = x <> u
+renderToken (Number _ x _)         = x
+renderToken (Percentage _ x _)     = x <> "%"
+renderToken (Dimension _ x _ u)    = x <> u
 
-renderToken (Url x)              = "url(" <> x <> ")"
-renderToken (BadUrl x)           = "url(" <> x <> ")"
+renderToken (Url _ x)              = "url(" <> x <> ")"
+renderToken (BadUrl _ x)           = "url(" <> x <> ")"
 
-renderToken (Ident x)            = x
+renderToken (Ident _ x)            = x
 
-renderToken (AtKeyword x)        = "@" <> x
+renderToken (AtKeyword _ x)        = "@" <> x
 
-renderToken (Function x)         = x <> "("
+renderToken (Function _ x)         = x <> "("
 
-renderToken (Hash _ x)           = "#" <> x
+renderToken (Hash _ _ x)           = "#" <> x
 
-renderToken (Delim x)            = T.singleton x
+renderToken (Delim _ x)            = T.singleton x
 
-renderToken (UserComment x)      = "/*" <> x <> "*/"
+renderToken (UserComment _ x)      = "/*" <> x <> "*/"
 
 renderString :: Text -> Text
 renderString = T.pack . concatMap f . T.unpack
@@ -199,87 +205,54 @@ renderString = T.pack . concatMap f . T.unpack
         else [c]
 
 
-parseComment :: Parser Token
+parseComment :: Parser SrcToken
 parseComment = do
-    void $ AP.string "/*"
-    commentText <- AP.manyTill' AP.anyChar (AP.string "*/")
-    return $ UserComment $ T.pack commentText
+  (commentText :~ pos) <- spanned $ do
+    void $ text "/*"
+    manyTill anyChar (text "*/")
+  return $ UserComment pos $ T.pack commentText
 
-parseWhitespace :: Parser Token
+parseWhitespace :: Parser SrcToken
 parseWhitespace = do
-    void $ AP.takeWhile1 isWhitespace
-    return Whitespace
+  Whitespace <$> spanning (skipSome (satisfy isWhitespace))
 
-parseChar :: Token -> Char -> Parser Token
-parseChar t c = do
-    _ <- AP.char c
-    return t
+parseChar :: Char -> Parser Span
+parseChar c = spanning $ char c
 
-parseStr :: Token -> Text -> Parser Token
-parseStr t str = AP.string str *> return t
-
-escapedCodePoint :: Parser Char
-escapedCodePoint = do
-    mbChar <- AP.peekChar
-    case mbChar of
-        Nothing -> return $ '\xFFFD'
-        Just ch -> do
-         if isHexChar ch
-          then do
-            (t, _) <- AP.runScanner [] f
-            case unhex (T.unpack t) of
-                Nothing -> fail $ "escapedCodePoint: unable to parse hex " ++ (T.unpack t)
-                Just cp -> do
-                    AP.peekChar >>= \c -> case c of
-                        Just nc -> if isWhitespace nc then void AP.anyChar else return ()
-                        _ -> return ()
-                    return $ if cp == 0 || cp > 0x10FFFF
-                      then chr 0xFFFD
-                      else chr cp
-          else do
-            if ch == '\n'
-                then fail "A newline"
-                else AP.anyChar >> return ch
-
-  where
-    f :: String -> Char -> Maybe String
-    f acc c =
-        if length acc < 6 && isHexChar c
-            then Just $ c:acc
-            else Nothing
-
+parseStr :: Text -> Parser Span
+parseStr str = spanning $ text str
 
 nextInputCodePoint :: Parser Char
-nextInputCodePoint = escapedCodePoint' <|> AP.anyChar
+nextInputCodePoint = escapedCodePoint' <|> anyChar
 
 
 whenNext :: Char -> a -> Parser a
 whenNext c a = do
-    mbChar <- AP.peekChar
+    mbChar <- peekChar
     if mbChar == Just c
         then return a
         else fail "whenNext"
 
 -- 4.3.4. Consume a string token
-parseString :: Char -> Parser Token
+parseString :: Char -> Parser SrcToken
 parseString endingCodePoint = do
-    _ <- AP.char endingCodePoint
-    go mempty
+    _ <- char endingCodePoint
+    (f :~ s) <- spanned $ go mempty
+    return $ f s
 
   where
     go acc = choice
-        [ (AP.endOfInput <|> void (AP.char endingCodePoint)) *> return (String endingCodePoint acc)
-        , AP.string "\\\n" *> go acc
-        , whenNext '\n' (BadString endingCodePoint acc)
+        [ (eof <|> void (char endingCodePoint)) *> return (\l -> String l endingCodePoint acc)
+        , string "\\\n" *> go acc
+        , whenNext '\n' (\l -> BadString l endingCodePoint acc)
         , nextInputCodePoint >>= \ch -> go (acc <> T.singleton ch)
         ]
 
 
-parseHash :: Parser Token
+parseHash :: Parser SrcToken
 parseHash = do
-    _ <- AP.char '#'
-    name <- parseName
-    return $ Hash HId name
+  (name :~ s) <- spanned (char '#' *> parseName)
+  return $ Hash s HId name
 
 isNameStartCodePoint :: Char -> Bool
 isNameStartCodePoint c = isLetter c || c >= '\x0080' || c == '_'
@@ -287,29 +260,57 @@ isNameStartCodePoint c = isLetter c || c >= '\x0080' || c == '_'
 isNameCodePoint :: Char -> Bool
 isNameCodePoint c = isNameStartCodePoint c || isDigit c || c == '-'
 
-parseNumeric :: Parser Token
+parseNumeric :: Parser SrcToken
 parseNumeric = do
+  f :~ s <- spanned $ do
     (repr, nv) <- parseNumericValue
-    dimNum repr nv <|> pctNum repr nv <|> return (Number repr nv)
+    dimNum repr nv <|> pctNum repr nv <|> return (\l -> Number l repr nv)
+  return $ f s
   where
     dimNum repr nv = do
         unit <- parseName
-        return $ Dimension repr nv unit
+        return $ \l -> Dimension l repr nv unit
     pctNum repr nv = do
-        _ <- AP.char '%'
-        return $ Percentage repr nv
+        _ <- char '%'
+        return $ \l -> Percentage l repr nv
 
 nameCodePoint :: Parser Char
-nameCodePoint = AP.satisfy isNameCodePoint
+nameCodePoint = satisfy isNameCodePoint
 
 escapedCodePoint' :: Parser Char
 escapedCodePoint' = do
-    _ <- AP.char '\\'
-    escapedCodePoint
+  _ <- char '\\'
+  (eof *> pure '\xFFFD') <|> do
+    t <- go [] (0 :: Int)
+    skipOptional $ choice [ void $ char ' '
+                          , void $ char '\t'
+                          , void $ char '\f'
+                          , void $ text "\r\n"
+                          , void $ char '\n'
+                          , void $ char '\r'
+                          ]
+    case unhex t of
+      Nothing -> fail $ "escapedCodePoint: unable to parse hex " ++ t
+      Just cp -> return $ if cp == 0 || cp > 0x10FFFF
+                   then chr 0xFFFD
+                   else chr cp
+  where
+    -- todo deal with ungetting last char if it's not hex char
+    go acc i = if (i < 6)
+      then do
+        mch <- peekChar
+        case mch of
+          Just ch -> if isHexChar ch
+            then do
+              void anyChar
+              (ch :) <$> go acc (succ i)
+            else pure acc
+          Nothing -> pure acc
+      else pure acc
 
 parseName :: Parser Text
-parseName = do
-    chars <- AP.many1' $
+parseName = try $ do
+    chars <- some $
         nameCodePoint <|> escapedCodePoint'
 
     case chars of
@@ -321,40 +322,40 @@ parseName = do
 
 parseSign :: Parser (Text, Int)
 parseSign = do
-    mbChar <- AP.peekChar
+    mbChar <- peekChar
     case mbChar of
-        Just '+' -> AP.anyChar >> return ("+", 1)
-        Just '-' -> AP.anyChar >> return ("-", (-1))
+        Just '+' -> anyChar >> return ("+", 1)
+        Just '-' -> anyChar >> return ("-", (-1))
         _        -> return ("", 1)
 
 parseNumericValue :: Parser (Text, NumericValue)
-parseNumericValue = do
+parseNumericValue = try $ do
     -- Sign
     (sS, s) <- parseSign
 
     -- Digits before the decimal dot. They are optional (".1em").
     (iS, i) <- do
-        digits <- AP.takeWhile isDigit
-        return $ if (T.null digits)
+        digits <- many (satisfy isDigit)
+        return $ if (null digits)
             then ("", 0)
-            else (digits, read $ T.unpack digits)
+            else (T.pack digits, read digits)
 
     -- Decimal dot and digits after it. If the decimal dot is there then it
     -- MUST be followed by one or more digits. This is not allowed: "1.".
     (fS, f, fB) <- option ("", 0, False) $ do
-        _ <- AP.char '.'
-        digits <- AP.takeWhile1 isDigit
-        return ("." <> digits, read $ T.unpack digits, True)
+        _ <- char '.'
+        digits <- some (satisfy isDigit)
+        return ("." <> T.pack digits, read digits, True)
 
     -- Exponent (with optional sign).
     (tS, t, eS, e, eB) <- option ("", 1, "", 0, False) $ do
-        e <- AP.char 'E' <|> AP.char 'e'
+        e <- char 'E' <|> char 'e'
         (tS, t) <- parseSign
-        eS <- AP.takeWhile1 isDigit
+        eS <- T.pack <$> some (satisfy isDigit)
 
         return (T.singleton e <> tS, t, eS, read $ T.unpack eS, True)
 
-    let repr = sS<>iS<>fS<>tS<>eS
+    let repr = sS <> iS <> fS <>tS <> eS
     if T.null repr || repr == "-" || repr == "+" || T.head repr == 'e' || T.head repr == 'E'
         then fail "parseNumericValue: no parse"
         else do
@@ -364,90 +365,91 @@ parseNumericValue = do
                 else (repr, NVInteger v)
 
 
-parseUrl :: Parser Token
+parseUrl :: Parser (Span -> SrcToken)
 parseUrl = do
-    _ <- AP.takeWhile isWhitespace
-    go mempty
+  skipMany (satisfy isWhitespace)
+  go mempty
 
   where
-    endOfUrl acc = (AP.endOfInput <|> void (AP.char ')')) *> return (Url acc)
+    endOfUrl acc = (eof <|> void (char ')')) *> return (\l -> Url l acc)
 
     go acc = choice
         [ endOfUrl acc
-        , (AP.char '"' <|> AP.char '\'' <|> AP.char '(') >>= \ch -> badUrl (acc <> T.singleton ch)
-        , AP.string "\\\n" *> badUrl (acc <> "\\\n")
-        , AP.takeWhile1 isWhitespace >>= \c -> (endOfUrl acc <|> badUrl (acc <> c))
+        , (char '"' <|> char '\'' <|> char '(') >>= \ch -> badUrl (acc <> T.singleton ch)
+        , string "\\\n" *> badUrl (acc <> "\\\n")
+        , some (satisfy isWhitespace) >>= \c -> (endOfUrl acc <|> badUrl (acc <> T.pack c))
         , nextInputCodePoint >>= \ch -> go (acc <> T.singleton ch)
         ]
 
     badUrl acc = choice
-        [ (AP.endOfInput <|> void (AP.char ')')) *> return (BadUrl acc)
+        [ (eof <|> void (char ')')) *> return (\l -> BadUrl l acc)
         , nextInputCodePoint >>= \ch -> badUrl (acc <> T.singleton ch)
         ]
 
 
-parseIdentLike :: Parser Token
+parseIdentLike :: Parser SrcToken
 parseIdentLike = do
+  f :~ s <- spanned $ do
     name <- parseName
     choice
-        [ do
-            -- Special handling of url() functions (they are not really
-            -- functions, they have their own Token type).
-            guard $ T.isPrefixOf "url" (T.map toLower name)
+      [ do
+          -- Special handling of url() functions (they are not really
+          -- functions, they have their own Token type).
+          guard $ T.isPrefixOf "url" (T.map toLower name)
 
-            void $ AP.char '('
-            void $ AP.takeWhile isWhitespace
+          void $ char '('
+          skipMany (satisfy isWhitespace)
 
-            whenNext '"' (Function name) <|> whenNext '\'' (Function name) <|> parseUrl
+          whenNext '"' (\l -> Function l name) <|> whenNext '\'' (\l -> Function l name) <|> parseUrl
 
-        , AP.char '(' *> return (Function name)
-        , return (Ident name)
-        ]
+      , char '(' *> return (\l -> Function l name)
+      , return (\l -> Ident l name)
+      ]
+  return $ f s
 
 
-parseEscapedIdentLike :: Parser Token
+parseEscapedIdentLike :: Parser SrcToken
 parseEscapedIdentLike = do
-    mbChar <- AP.peekChar
+    mbChar <- peekChar
     case mbChar of
-        Just '\\' -> parseIdentLike <|> (AP.anyChar >> return (Delim '\\'))
+        Just '\\' -> parseIdentLike <|> (spanning anyChar >>= \l -> return $ Delim l '\\')
         _         -> fail "parseEscapedIdentLike: Does not start with an escape code"
 
-parseAtKeyword :: Parser Token
+parseAtKeyword :: Parser SrcToken
 parseAtKeyword = do
-    _ <- AP.char '@'
-    name <- parseName
-    return $ AtKeyword name
+    (name :~ s) <- spanned (char '@' *> parseName)
+    return $ AtKeyword s name
 
 
-parseToken :: Parser Token
+parseToken :: Parser SrcToken
 parseToken = choice
     [ parseWhitespace
 
-    , AP.string "<!--" *> return CDO
-    , AP.string "-->" *> return CDC
+    , CDO <$> spanning (text "<!--")
+    , CDC <$> spanning (text "-->")
 
-    , parseChar Comma ','
-    , parseChar Colon ':'
-    , parseChar Semicolon ';'
-    , parseChar LeftParen '('
-    , parseChar RightParen ')'
-    , parseChar LeftSquareBracket '['
-    , parseChar RightSquareBracket ']'
-    , parseChar LeftCurlyBracket '{'
-    , parseChar RightCurlyBracket '}'
+    , Comma <$> parseChar ','
+    , Colon <$> parseChar ':'
+    , Semicolon <$> parseChar ';'
+    , LeftParen <$> parseChar '('
+    , RightParen <$> parseChar ')'
+    , LeftSquareBracket <$> parseChar '['
+    , RightSquareBracket <$> parseChar ']'
+    , LeftCurlyBracket <$> parseChar '{'
+    , RightCurlyBracket <$> parseChar '}'
 
-    , parseStr SuffixMatch "$="
-    , parseStr SubstringMatch "*="
-    , parseStr PrefixMatch "^="
-    , parseStr DashMatch "|="
-    , parseStr IncludeMatch "~="
+    , SuffixMatch <$> parseStr "$="
+    , SubstringMatch <$> parseStr "*="
+    , PrefixMatch <$> parseStr "^="
+    , DashMatch <$> parseStr "|="
+    , IncludeMatch <$> parseStr "~="
 
-    , parseStr Column "||"
+    , Column <$> parseStr "||"
 
     , parseNumeric
+    , parseIdentLike
 
     , parseEscapedIdentLike
-    , parseIdentLike
     , parseHash
 
     , parseString '"'
@@ -455,7 +457,7 @@ parseToken = choice
 
     , parseAtKeyword
     , parseComment
-    , AP.anyChar >>= return . Delim
+    , spanned anyChar >>= \(c :~ s) -> return $ Delim s c
     ] <?> "token"
 
 
@@ -511,3 +513,7 @@ unhex = fmap toInt . go []
     c 'e' = return 14
     c 'f' = return 15
     c _   = fail "Invalid hex digit!"
+
+peekChar :: (CharParsing m, LookAheadParsing m) => m (Maybe Char)
+peekChar = lookAhead ((Just <$> anyChar) <|> (eof *> pure Nothing))
+
